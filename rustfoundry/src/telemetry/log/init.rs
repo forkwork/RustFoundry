@@ -76,15 +76,23 @@ pub(crate) fn init(service_info: &ServiceInfo, settings: &LoggingSettings) -> Bo
     const BUF_SIZE: usize = 4096;
 
     let base_drain = match (&settings.output, &settings.format) {
-        (LogOutput::Terminal, LogFormat::Text) => {
-            let drain = TextDrain::new(TermDecorator::new().stdout().build())
-                .build()
-                .fuse();
+        (output @ (LogOutput::Terminal | LogOutput::Stderr), LogFormat::Text) => {
+            let decorator = if matches!(output, LogOutput::Terminal) {
+                TermDecorator::new().stdout().build()
+            } else {
+                TermDecorator::new().stderr().build()
+            };
+
+            let drain = TextDrain::new(decorator).build().fuse();
             AsyncDrain::new(drain).chan_size(CHANNEL_SIZE).build()
         }
-        (LogOutput::Terminal, LogFormat::Json) => {
-            let buf = BufWriter::with_capacity(BUF_SIZE, io::stdout());
-            let drain = build_json_log_drain(buf);
+        (output @ (LogOutput::Terminal | LogOutput::Stderr), LogFormat::Json) => {
+            let writer = if matches!(output, LogOutput::Terminal) {
+                stdout_writer_without_line_buffering()
+            } else {
+                stderr_writer_without_line_buffering()
+            };
+            let drain = build_json_log_drain(writer);
             AsyncDrain::new(drain).chan_size(CHANNEL_SIZE).build()
         }
         (LogOutput::File(file), LogFormat::Text) => {
@@ -123,7 +131,12 @@ pub(crate) fn init(service_info: &ServiceInfo, settings: &LoggingSettings) -> Bo
 
     Ok(())
 }
+fn stderr_writer_without_line_buffering() -> BufWriter<File> {
+     let stderr = unsafe { File::from_raw_fd(2) };
+     BufWriter::with_capacity(BUF_SIZE, stderr)
+ }
 
+/// Opens fd 2 directly and wraps with a [`BufWriter`] with [`BUF_SIZE`] capacity.
 fn get_root_drain(
     _settings: &LoggingSettings,
     base_drain: Arc<dyn SendSyncRefUnwindSafeDrain<Err = Never, Ok = ()> + 'static>,
